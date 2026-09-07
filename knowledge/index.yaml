@@ -1,0 +1,15 @@
+# Topic index — the entry point for every agent and reader.
+# A document that no topic lists is invisible; add it to a topic in the same PR.
+language: en   # ISO 639-1. Prose language for knowledge/ documents.
+
+topics:
+  enforcement:
+    current:
+      - constitution/principles.md
+      - constitution/glossary.md
+      - decisions/adr/ADR-0001-nftables-output-drop.md
+
+  vpn-support:
+    current:
+      - constitution/glossary.md
+      - decisions/adr/ADR-0002-upstream-discovery.md
