@@ -21,6 +21,8 @@ and tests. Tick what moved, or record the reason nothing did.
 A kill switch bug takes a machine offline with no obvious cause. For any change
 touching rule generation:
 
-- [ ] `bullseye arm --dry-run` renders and validates the ruleset
-- [ ] refuses to arm with an empty upstream set
-- [ ] escape hatch still works: `sudo nft destroy table inet bullseye`
+- [ ] `cargo test` passes — `tests/lockout_guards.rs` is this checklist, executed:
+      empty upstream refused, tunnel required, `/0` holes refused, unparsed input
+      rejected, escape hatch present in `--help`
+- [ ] `bullseye arm --dry-run` renders and validates against the kernel (needs root,
+      so it is not in `cargo test` — run it by hand when rule generation changed)
