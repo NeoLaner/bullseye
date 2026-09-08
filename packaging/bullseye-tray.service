@@ -1,0 +1,29 @@
+# The icon in the bar. A user unit, not a system one: the tray is a
+# StatusNotifierItem on the user's session bus, and root's session bus is not it.
+#
+#   install -Dm644 packaging/bullseye-tray.service ~/.config/systemd/user/bullseye-tray.service
+#   systemctl --user enable --now bullseye-tray
+#
+# On a compositor that never reaches graphical-session.target — a bare Hyprland or
+# sway without uwsm — this unit will sit there never started. Launch it from the
+# compositor instead, through the unit rather than the binary: systemd then starts
+# one instance or none, so a session that later does reach that target cannot leave
+# you with two tray icons.
+#   exec-once = systemctl --user start bullseye-tray
+
+[Unit]
+Description=bullseye kill switch tray icon
+Documentation=https://github.com/NeoLaner/bullseye
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=exec
+# Where the README's `install -Dm755 ... /usr/local/bin` puts it. Distro packaging
+# (stage 7) will want /usr/bin instead.
+ExecStart=/usr/local/bin/bullseye tray
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

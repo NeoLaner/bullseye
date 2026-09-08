@@ -20,6 +20,12 @@ topics:
     superseded:
       - decisions/adr/ADR-0002-upstream-discovery.md
 
+  operations:
+    current:
+      - constitution/principles.md
+    proposed:
+      - decisions/adr/ADR-0006-daemon-and-tray.md
+
   bypass:
     current:
       - constitution/glossary.md

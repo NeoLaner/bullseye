@@ -1,0 +1,42 @@
+# The kill switch at boot, and the thing that keeps it true afterwards.
+#
+#   sudo install -Dm644 packaging/bullseye.service /etc/systemd/system/bullseye.service
+#   sudo mkdir -p /etc/bullseye
+#   sudo ln -sfn ~/.config/bullseye/config.toml /etc/bullseye/config.toml
+#   sudo systemctl enable --now bullseye
+#
+# If it ever locks you out, this still works with bullseye uninstalled:
+#   sudo nft destroy table inet bullseye
+
+[Unit]
+Description=bullseye VPN kill switch
+Documentation=https://github.com/NeoLaner/bullseye
+# The ordering nftables.service itself uses. A kill switch that loads after the
+# first packet has left is not one.
+Wants=network-pre.target
+Before=network-pre.target
+
+[Service]
+Type=exec
+# Where the README's `install -Dm755 ... /usr/local/bin` puts it. Distro packaging
+# (stage 7) will want /usr/bin instead.
+ExecStart=/usr/local/bin/bullseye daemon
+# Explicit rather than inherited: a system service is root with HOME=/root, and
+# /root/.config is not where anyone edits this. Naming it here also means
+# `sudo BULLSEYE_CONFIG=/etc/bullseye/config.toml bullseye daemon` reproduces
+# exactly what the unit does, instead of quietly reading a different file.
+Environment=BULLSEYE_CONFIG=/etc/bullseye/config.toml
+# /run/bullseye, where the daemon publishes what the tray draws. systemd removes
+# it when the daemon stops, which is the signal the tray needs: no file means ask
+# the kernel yourself rather than believe a stale answer about a kill switch.
+RuntimeDirectory=bullseye
+Restart=always
+RestartSec=5
+
+# There is deliberately no ExecStop. Disarming is a decision, not a side effect of
+# this unit going away: the ruleset lives in the kernel and holds with bullseye
+# stopped, uninstalled or crashed (principle 2). `bullseye disarm` is how you mean
+# it, and `systemctl restart bullseye` is how you arm again.
+
+[Install]
+WantedBy=multi-user.target

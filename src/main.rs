@@ -1,7 +1,9 @@
 mod config;
+mod daemon;
 mod discover;
 mod nft;
 mod rules;
+mod tray;
 mod tui;
 
 use config::Config;
@@ -21,6 +23,8 @@ bullseye — a VPN kill switch. The output chain drops; everything else is a hol
   bullseye pin [<ip>|off]           fix the VPN's server to one address
   bullseye run <command...>         launch something outside the tunnel
   bullseye config                   where the config lives, and what is in it
+  bullseye daemon                   arm at boot, and re-arm when the VPN moves server
+  bullseye tray                     the state in your bar, and a click to change it
 
 arm options — all optional; the config file supplies the rest, and nothing here is
 written back to it:
@@ -69,6 +73,8 @@ fn dispatch() -> Result<(), String> {
         Some("pin") => pin_command(&args[1..]),
         Some("run") => run_command(&args[1..]),
         Some("config") => config_command(),
+        Some("daemon") => daemon::run(),
+        Some("tray") => tray::run(),
         Some("-h" | "--help") => {
             print!("{USAGE}");
             Ok(())
