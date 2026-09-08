@@ -210,6 +210,25 @@ r       re-run discovery        q   quit
 The header is the whole state: armed or not, the packets dropped since arming,
 the tunnel, the upstream, and whether the pin still matches reality.
 
+The corner of the header is the target itself, which is the state with a face on
+it — asleep while nothing is enforced, watching while the ruleset holds, startled
+for a moment each time the drop counter moves, and alarmed while a pin no longer
+matches the server the VPN is dialling:
+
+```
+   .-───-.        .-───-.        .-───-.
+  / .═══. \      / .───. \      / .───. \
+ | | o o | |    | | x x | |    | | - - | |
+ | |  u  | |    | |  o  | |    | |  o  | |
+  \ `═══' /      \ `───' /      \ `───' /
+   `-───-'        `-───-'        `-───-'   z
+    armed          dropping       disarmed
+```
+
+It is the only thing on the screen that moves on its own, which is how you notice
+a state you were not reading. On a terminal too narrow for it, the report gets the
+columns instead.
+
 ## Commands
 
 ```sh
