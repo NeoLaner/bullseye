@@ -2,6 +2,7 @@ mod config;
 mod discover;
 mod nft;
 mod rules;
+mod tui;
 
 use config::Config;
 use std::path::PathBuf;
@@ -10,6 +11,7 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 bullseye — a VPN kill switch. The output chain drops; everything else is a hole.
 
+  bullseye                          the TUI
   bullseye arm [options]            load the ruleset
   bullseye disarm                   destroy it
   bullseye status                   what is loaded, and whether the pin still holds
@@ -53,10 +55,7 @@ fn main() -> ExitCode {
 fn dispatch() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        None => {
-            print!("{USAGE}");
-            Ok(())
-        }
+        None => tui::run(),
         Some("arm") => arm_command(&args[1..]),
         Some("disarm") => {
             disarm()?;
