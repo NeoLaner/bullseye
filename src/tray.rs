@@ -248,36 +248,33 @@ impl ksni::Tray for Bullseye {
         }
     }
 
-    /// The padlock, because that is what a kill switch reads as in a bar, and
-    /// because it survives the theme. The obvious names — `security-high`,
-    /// `-medium`, `-low` — are correct on Breeze and inverted on Adwaita, where
-    /// "high" ships as a red shield and "low" as a friendly gold one: exactly
-    /// backwards for a control whose good state is the locked one.
+    /// The program's own mark, not a themed name. `icon_name` stays empty on
+    /// purpose: the spec says a host prefers the name and falls back to the
+    /// pixmap, so anything returned here would hide the bullseye.
     ///
-    /// All four are freedesktop Status names. `changes-prevent` and
-    /// `changes-allow` are colour icons on Adwaita and only `-symbolic` on Breeze,
-    /// so a KDE box draws the monochrome pair; the shapes still differ, and the
-    /// two states that need attention are a triangle and a question mark rather
-    /// than a lock at all.
-    fn icon_name(&self) -> String {
-        match self.state {
-            State::Armed => "changes-prevent",
-            State::Blocked => "dialog-warning",
-            State::Disarmed => "changes-allow",
-            State::Unknown => "dialog-question",
-        }
-        .into()
+    /// The themed names were tried first and are why this exists. The obvious
+    /// ones — `security-high`, `-medium`, `-low` — are correct on Breeze and
+    /// inverted on Adwaita, which ships "high" as a red shield and "low" as a
+    /// friendly gold one: backwards for a control whose good state is the locked
+    /// one. The padlock pair that replaced them is a colour icon on Adwaita and
+    /// monochrome on Breeze, so the same box looked like two different programs.
+    /// A drawn icon is the same icon everywhere.
+    ///
+    /// Three sizes because the host picks the nearest and scales; 22 is the usual
+    /// bar height and 44 is the same bar on a HiDPI screen.
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        [22, 32, 44].iter().map(|&px| draw(px, self.state)).collect()
     }
 
     /// Hosts that honour NeedsAttention draw this one instead, so it has to say
     /// the same thing rather than fall back to a default.
-    fn attention_icon_name(&self) -> String {
-        self.icon_name()
+    fn attention_icon_pixmap(&self) -> Vec<ksni::Icon> {
+        self.icon_pixmap()
     }
 
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
-            icon_name: self.icon_name(),
+            icon_pixmap: self.icon_pixmap(),
             // A refused click outranks the state: it is the one message the user
             // asked for, and the state behind it has not changed anyway.
             title: match self.problem.as_deref().and_then(|why| why.lines().next()) {
@@ -309,7 +306,7 @@ impl ksni::Tray for Bullseye {
                     State::Armed | State::Blocked => "Disarm — stop enforcing anything".into(),
                     _ => "Arm — drop everything that is not a hole".into(),
                 },
-                icon_name: self.icon_name(),
+                icon_name: menu_icon(self.state).into(),
                 enabled: !self.working,
                 activate: Box::new(|tray: &mut Self| tray.toggle()),
                 ..Default::default()
@@ -367,6 +364,71 @@ fn escaped(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;")
 }
 
+/// The logo, drawn rather than shipped. A bullseye is concentric circles, so the
+/// mark that names the program is arithmetic: no image in the binary, no asset
+/// path to find at runtime, no icon theme to install, and the same shape at every
+/// size a bar asks for.
+///
+/// The gaps between the rings are left transparent rather than painted white. A
+/// bar can be any colour, and rings separated by the panel behind them read as a
+/// bullseye on all of them.
+fn draw(px: i32, state: State) -> ksni::Icon {
+    /// Fractions of the radius, outermost first, so a state drawn with fewer of
+    /// them loses the centre rather than the ring that makes it recognisable.
+    static BANDS: [(f32, f32); 3] = [(0.72, 0.98), (0.34, 0.56), (0.0, 0.18)];
+    const RED: [u8; 3] = [222, 40, 33];
+    const GREY: [u8; 3] = [140, 140, 140];
+
+    // Colour is never the only difference: blocked carries the sight lines and
+    // the two unenforced states lose rings, so these are four shapes to a user
+    // who cannot tell the red from the grey — or whose bar renders neither.
+    let (ink, bands, sights) = match state {
+        State::Armed => (RED, 3, false),
+        State::Blocked => (RED, 3, true),
+        // The same target with nothing in the middle: nothing is being enforced.
+        State::Disarmed => (GREY, 2, false),
+        // One ring, and no claim about what is inside it.
+        State::Unknown => (GREY, 1, false),
+    };
+
+    let radius = px as f32 / 2.0;
+    let mut data = Vec::with_capacity((px * px * 4) as usize);
+    for y in 0..px {
+        for x in 0..px {
+            // 3x3 supersample. A bar icon is 22 pixels across, and a circle drawn
+            // one sample to the pixel at that size is a staircase.
+            let mut covered = 0u32;
+            for sample in 0..9 {
+                let dx = x as f32 + (sample % 3) as f32 / 3.0 + 1.0 / 6.0 - radius;
+                let dy = y as f32 + (sample / 3) as f32 / 3.0 + 1.0 / 6.0 - radius;
+                let d = dx.hypot(dy) / radius;
+                let on_ring = BANDS[..bands].iter().any(|&(from, to)| d >= from && d <= to);
+                let on_sights = sights && d <= 1.0 && dx.abs().min(dy.abs()) < radius * 0.05;
+                covered += u32::from(on_ring || on_sights);
+            }
+            // ARGB32 in network byte order, which is what the spec asks for, and
+            // not premultiplied — only the anti-aliased edge carries a partial
+            // alpha at all, so the two readings differ by a rim of pixels.
+            data.extend_from_slice(&[(covered * 255 / 9) as u8, ink[0], ink[1], ink[2]]);
+        }
+    }
+    ksni::Icon {
+        width: px,
+        height: px,
+        data,
+    }
+}
+
+/// A menu row is drawn from a themed name — the only pixmap a row can carry is a
+/// PNG, and encoding one to put a bullseye next to a word is not worth a decoder
+/// in the binary. So the padlock stays here, where the drawn mark cannot go.
+fn menu_icon(state: State) -> &'static str {
+    match state {
+        State::Armed | State::Blocked => "changes-prevent",
+        _ => "changes-allow",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +478,23 @@ mod tests {
         tray.working = true;
         tray.reread();
         assert!(tray.problem.is_some());
+    }
+    #[test]
+    fn the_mark_is_a_bullseye_at_every_size_a_bar_asks_for() {
+        for px in [22, 32, 44] {
+            let icon = draw(px, State::Armed);
+            assert_eq!(icon.data.len(), (px * px * 4) as usize);
+            let alpha_at = |x: i32, y: i32| icon.data[((y * px + x) * 4) as usize];
+            assert_eq!(alpha_at(px / 2, px / 2), 255, "{px}: no centre to hit");
+            assert_eq!(alpha_at(0, 0), 0, "{px}: a circle does not reach the corner");
+        }
+        // The states differ by shape and not only by colour: armed has the centre
+        // filled, disarmed is the same target with nothing in it.
+        let centre = |state| {
+            let px = 32;
+            draw(px, state).data[((px / 2 * px + px / 2) * 4) as usize]
+        };
+        assert_eq!(centre(State::Armed), 255);
+        assert_eq!(centre(State::Disarmed), 0);
     }
 }

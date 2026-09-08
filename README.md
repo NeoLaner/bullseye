@@ -1,5 +1,7 @@
 # bullseye
 
+<img src="packaging/bullseye.svg" width="88" align="right" alt="">
+
 A customizable VPN kill switch for Linux. nftables does the enforcing, a TUI does
 the driving. Works with any VPN — WireGuard, OpenVPN, xray/v2ray, Tailscale, or a
 commercial client wrapping one of them.
@@ -66,7 +68,7 @@ and GNOME, and in anything else that speaks the spec — no per-bar configuratio
 On a compositor that never reaches `graphical-session.target` (a bare Hyprland or
 sway, without uwsm) the user unit is enabled but nothing ever pulls it in. Start it
 from the compositor instead — through the unit, not the binary, so that a session
-which *does* reach that target later cannot leave you with two padlocks:
+which *does* reach that target later cannot leave you with two bullseyes:
 
 ```
 exec-once = systemctl --user start bullseye-tray
@@ -75,20 +77,24 @@ exec-once = systemctl --user start bullseye-tray
 If you already gate your tray apps on the StatusNotifierWatcher being up, that
 script is the better home for the same line.
 
+The icon is the bullseye itself, in four states:
+
 | Icon | State | |
 |---|---|---|
-| `changes-prevent` — closed padlock | **armed** | the kill switch is holding and the tunnel works |
-| `dialog-warning` — triangle | **armed, and nothing is getting out** | no tunnel is up, or the pin no longer matches the server the VPN is dialling. This is the answer to "why did my internet stop" |
-| `changes-allow` — open padlock | **off** | nothing is enforced |
-| `dialog-question` | **cannot tell** | no daemon, and `nft` would not answer either. Never drawn as "off": the ruleset may be holding fine |
+| red target, centre filled | **armed** | the kill switch is holding and the tunnel works |
+| red target with sight lines | **armed, and nothing is getting out** | no tunnel is up, or the pin no longer matches the server the VPN is dialling. This is the answer to "why did my internet stop" |
+| grey target, centre empty | **off** | nothing is enforced |
+| a single grey ring | **cannot tell** | no daemon, and `nft` would not answer either. Never drawn as "off": the ruleset may be holding fine |
 
-All four are freedesktop Status icon names. The obvious ones — `security-high`,
-`-medium`, `-low` — are deliberately *not* used: they are colour-correct on Breeze
+No colour carries a state on its own — the sight lines and the missing rings say
+the same thing to a bar that renders it monochrome, and to a user who cannot tell
+the red from the grey. It is drawn rather than installed, so there is no icon
+theme to set up and it looks the same on every desktop. Themed names were tried
+first and are why: `security-high`/`-medium`/`-low` are colour-correct on Breeze
 and inverted on Adwaita, which ships "high" as a red shield and "low" as a
-friendly gold one, exactly backwards for a control whose good state is locked. The
-padlocks are colour icons on Adwaita and `-symbolic` only on Breeze, so a KDE box
-draws them monochrome — the shapes still differ, and the two states that need
-attention are not padlocks at all.
+friendly gold one — backwards for a control whose good state is the locked one —
+and the padlock pair that replaced them is a colour icon on Adwaita and monochrome
+on Breeze, so the same machine looked like two different programs.
 
 Left click toggles. The menu shows the same lines `be status` prints, and quits.
 
