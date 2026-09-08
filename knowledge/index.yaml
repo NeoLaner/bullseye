@@ -12,4 +12,15 @@ topics:
   vpn-support:
     current:
       - constitution/glossary.md
+      - decisions/adr/ADR-0003-upstream-discovery-corrections.md
+    proposed:
+      - decisions/adr/ADR-0004-derived-cgroup-trust.md
+    # History. Listed so it is not invisible, separate so it is never retrieved
+    # as current truth.
+    superseded:
       - decisions/adr/ADR-0002-upstream-discovery.md
+
+  bypass:
+    current:
+      - constitution/glossary.md
+      - decisions/adr/ADR-0005-app-bypass-by-group.md

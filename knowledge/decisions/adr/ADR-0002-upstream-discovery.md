@@ -2,14 +2,14 @@
 id: ADR-0002
 type: adr
 title: Discover the VPN upstream by cgroup, then live sockets, then config parse
-status: active
+status: superseded
 owner: neolaner
 created_at: 2026-09-07
 last_verified_at: 2026-09-07
 effective_from: 0.1.0
 supersedes: null
-superseded_by: null
-related: [PRD-BULLSEYE-001, PRD-BULLSEYE-002, ADR-0001]
+superseded_by: ADR-0003
+related: [PRD-BULLSEYE-001, PRD-BULLSEYE-002, ADR-0001, ADR-0003]
 code_refs: []
 test_refs: []
 tags: [nftables, cgroup, vpn-support, architecture]
@@ -17,10 +17,17 @@ tags: [nftables, cgroup, vpn-support, architecture]
 
 # [ADR-0002] Discover the VPN upstream by cgroup, then live sockets, then config parse
 
-Status: accepted
+Status: superseded
 Date: 2026-09-07
 Owner: neolaner
 Supersedes: —
+Superseded by: [ADR-0003](ADR-0003-upstream-discovery-corrections.md)
+
+> **History only — do not implement from this document.** Three of the specifics
+> below were disproved against a live system: the cgroup example cannot load, the
+> `level` is not a constant, and Tailscale needs an upstream hole of its own. The
+> shape of the decision — three strategies, first success wins, no plugin system —
+> survives in ADR-0003. The text below is left exactly as it was accepted.
 
 ## Context and problem
 

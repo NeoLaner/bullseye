@@ -9,9 +9,9 @@ last_verified_at: 2026-09-07
 effective_from: 0.1.0
 supersedes: null
 superseded_by: null
-related: [ADR-0001, ADR-0002]
-code_refs: []
-test_refs: []
+related: [ADR-0001, ADR-0002, ADR-0003]
+code_refs: [src/nft.rs, src/rules.rs, src/main.rs]
+test_refs: [tests/lockout_guards.rs]
 tags: [constitution, security, networking]
 ---
 

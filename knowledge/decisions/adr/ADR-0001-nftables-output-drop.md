@@ -9,9 +9,9 @@ last_verified_at: 2026-09-07
 effective_from: 0.1.0
 supersedes: null
 superseded_by: null
-related: [PRD-BULLSEYE-001, PRD-BULLSEYE-002, ADR-0002]
-code_refs: []
-test_refs: []
+related: [PRD-BULLSEYE-001, PRD-BULLSEYE-002, ADR-0002, ADR-0003]
+code_refs: [src/nft.rs, src/rules.rs, src/main.rs]
+test_refs: [src/rules.rs, tests/lockout_guards.rs]
 tags: [nftables, enforcement, architecture]
 ---
 
