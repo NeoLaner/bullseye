@@ -1,13 +1,14 @@
 mod config;
 mod daemon;
 mod discover;
+mod geoip;
 mod nft;
 mod rules;
 mod tray;
 mod tui;
 
 use config::Config;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
@@ -18,7 +19,8 @@ bullseye — a VPN kill switch. The output chain drops; everything else is a hol
   bullseye disarm                   destroy it
   bullseye status                   what is loaded, and whether the pin still holds
   bullseye discover                 what arm would use, changing nothing
-  bullseye allow <ip|cidr|domain>   open a bypass, and re-arm if armed
+  bullseye allow <ip|cidr|domain|geoip:cc>
+                                    open a bypass, and re-arm if armed
   bullseye deny <entry>             close one
   bullseye pin [<ip>|off]           fix the VPN's server to one address
   bullseye run <command...>         launch something outside the tunnel
@@ -35,7 +37,9 @@ written back to it:
                          address, e.g. system.slice/openvpn@home.service
   --vpn-config <path>    a WireGuard, OpenVPN or xray config to read the server
                          from; the only source that works before the VPN starts
-  --bypass <ip|cidr|domain>  leaves outside the tunnel, with your real address
+  --bypass <ip|cidr|domain|geoip:cc>  leaves outside the tunnel, with your real
+                         address. geoip:ir is every address range Iran has, which is
+                         all that a whole-ccTLD bypass can be in a firewall
   --lockdown             arm with no upstream on purpose — nothing gets out
   --no-tailscale         close the remote-access hole; you may lose your way back in
   --no-local             close the LAN, DHCP and multicast hole
@@ -110,7 +114,7 @@ pub fn plan(config: &Config, lockdown: bool) -> Result<Plan, String> {
     let mut report = String::new();
 
     for entry in &config.allow {
-        report += &open_bypass(&mut holes, entry)?;
+        report += &open_bypass(&mut holes, entry, config.geoip.as_deref())?;
     }
     // No group, no hole. A bypass that lets a whole class of processes out is worth
     // more than an address, so it exists only once the user has made the group.
@@ -225,10 +229,18 @@ pub fn refuse_lockout(plan: &Plan) -> Result<(), String> {
     Ok(())
 }
 
-/// A bypass is an address, a CIDR or a domain, and only the domain needs work:
-/// nftables sets hold addresses, so a name is resolved here and covers whatever it
-/// pointed at when the ruleset was built.
-fn open_bypass(holes: &mut rules::Holes, entry: &str) -> Result<String, String> {
+/// A bypass is an address, a CIDR, a domain or a country, and only the last two
+/// need work: nftables sets hold addresses, so a name is resolved here and covers
+/// whatever it pointed at when the ruleset was built, and a country is read out of
+/// the geoip database an xray or v2ray install already ships.
+fn open_bypass(
+    holes: &mut rules::Holes,
+    entry: &str,
+    geoip: Option<&Path>,
+) -> Result<String, String> {
+    if let Some(code) = entry.strip_prefix("geoip:") {
+        return open_country(holes, entry, code, geoip);
+    }
     if rules::address(entry).is_ok() {
         holes.add_bypass(entry)?;
         return Ok(format!("bypass   {entry}\n"));
@@ -246,6 +258,40 @@ fn open_bypass(holes: &mut rules::Holes, entry: &str) -> Result<String, String> 
         holes.add_bypass(address)?;
     }
     Ok(format!("bypass   {entry} -> {}\n", summarised(&addresses)))
+}
+
+/// Every range a country has. Thousands of them, so the report counts rather than
+/// lists — and names the file they came from, because which database answered is
+/// the difference between a bypass that agrees with the VPN's own routing and one
+/// that does not.
+///
+/// Nothing here is fatal, for the reason a domain that will not resolve is not: a
+/// bypass that does not open stays blocked, and a box whose geoip database is
+/// missing or whose country code has a typo in it still gets a kill switch.
+fn open_country(
+    holes: &mut rules::Holes,
+    entry: &str,
+    code: &str,
+    geoip: Option<&Path>,
+) -> Result<String, String> {
+    let Some(path) = geoip::database(geoip) else {
+        return Ok(format!(
+            "bypass   {entry} — no geoip.dat found, skipped. Install xray's or \
+             v2ray's, or point [bypass] geoip at one\n"
+        ));
+    };
+    let ranges = match geoip::ranges(code, &path) {
+        Ok(ranges) => ranges,
+        Err(why) => return Ok(format!("bypass   {entry} — {why}, skipped\n")),
+    };
+    for range in &ranges {
+        holes.add_bypass(range)?;
+    }
+    Ok(format!(
+        "bypass   {entry} -> {} ranges from {}\n",
+        ranges.len(),
+        path.display()
+    ))
 }
 
 /// A name behind a CDN resolves to a dozen addresses, and a dozen addresses on one
@@ -404,7 +450,7 @@ fn discover_command(args: &[String]) -> Result<(), String> {
 fn allow_command(args: &[String]) -> Result<(), String> {
     let entry = args.first().ok_or("allow: needs an IP, a CIDR or a domain")?;
     let mut config = Config::load()?;
-    config.allow(entry)?;
+    let entry = config.allow(entry)?;
     config.save()?;
     println!("allowed {entry} — it leaves outside the tunnel, with your real address");
     reapply(&config)

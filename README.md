@@ -131,7 +131,7 @@ The output chain is `policy drop`. Everything else is a list of holes:
 |---|---|
 | **Tunnel** | traffic going into the VPN interface |
 | **Upstream** | how the VPN process reaches its own server |
-| **Bypass** | your allowlist — an IP, a CIDR, a domain, or an app |
+| **Bypass** | your allowlist — an IP, a CIDR, a domain, a country, or an app |
 | **Local** | LAN, loopback, DHCP, multicast — none of it reaches the internet |
 
 Tailscale gets both a tunnel hole and an upstream hole by default, because
@@ -172,13 +172,15 @@ strategy that can actually produce a match wins, and `discover` names it:
 
 ## Bypassing the kill switch
 
-Three kinds of bypass. All of them leave the tunnel with your real address — that
+Four kinds of bypass. All of them leave the tunnel with your real address — that
 is what a bypass is.
 
 ```sh
 be allow 192.168.1.50           # an address
 be allow 203.0.113.0/24         # a range
 be allow registry.npmjs.org     # a domain, resolved when the ruleset is built
+be allow https://jobinja.ir/    # a URL keeps its host and drops the rest
+be allow geoip:ir               # a country, every range it has
 be deny  registry.npmjs.org
 
 be run firefox                  # an app: this launch bypasses, nothing else does
@@ -194,6 +196,23 @@ A domain covers whatever it resolved to when you armed. A CDN outgrows that —
 `registry.npmjs.org` is a dozen Cloudflare addresses today and different ones
 next week — so re-arm, or use the range.
 
+### A whole country
+
+`*.ir` is not something a firewall can match. A ruleset holds addresses and not
+names, and there is no way to enumerate a top-level domain — so `be allow "*.ir"`
+stores `geoip:ir`, and opens every address range Iran has instead.
+
+That is a different claim than the one you made, and it is worth knowing which
+way it differs: it covers Iranian services that are not `.ir` at all, and it
+misses a `.ir` name parked on a CDN abroad. For "the local sites should see my
+real address, not the VPN's", the country is the answer you actually wanted.
+
+The ranges come from the `geoip.dat` an xray or v2ray install already ships — the
+same file the VPN's own routing uses to decide what goes direct, so the two
+cannot disagree about where Iran is. The usual install paths are searched; point
+`[bypass] geoip` at the file if yours is somewhere else. No database, no hole:
+the bypass is skipped and the report says so, rather than the arming failing.
+
 ## The TUI
 
 ```
@@ -201,7 +220,7 @@ be
 ```
 
 ```
-space   arm / disarm            a   allow an IP, CIDR or domain
+space   arm / disarm            a   allow an IP, CIDR, domain or geoip:ir
 p       pin the VPN's server    A   add an app to launch
 enter   launch the selected app d   remove the selected entry
 r       re-run discovery        q   quit
@@ -209,6 +228,13 @@ r       re-run discovery        q   quit
 
 The header is the whole state: armed or not, the packets dropped since arming,
 the tunnel, the upstream, and whether the pin still matches reality.
+
+Every edit here re-arms an armed box, the way `be allow` and `be deny` do — a
+bypass you removed is closed in the kernel and not only in the file. It takes a
+second or two, because it re-resolves every domain; the message at the bottom
+says so when it is done. The one thing it will not do is re-arm into a state
+where nothing gets out at all: if the tunnel has gone away, the edit is saved,
+the ruleset is left alone, and the message says which.
 
 The corner of the header is the target itself, which is the state with a face on
 it — asleep while nothing is enforced, watching while the ruleset holds, startled
@@ -237,7 +263,8 @@ be arm [options]                  load the ruleset
 be disarm                         destroy it
 be status                         what is loaded, and whether the pin still holds
 be discover                       what arm would use, changing nothing
-be allow <ip|cidr|domain>         open a bypass, and re-arm if armed
+be allow <ip|cidr|domain|geoip:cc>
+                                  open a bypass, and re-arm if armed
 be deny <entry>                   close one
 be pin [<ip>|off]                 fix the VPN's server to one address
 be run <command...>               launch something outside the tunnel

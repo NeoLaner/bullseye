@@ -5,13 +5,13 @@ title: bullseye glossary
 status: active
 owner: neolaner
 created_at: 2026-09-07
-last_verified_at: 2026-09-08
+last_verified_at: 2026-09-09
 effective_from: 0.1.0
 supersedes: null
 superseded_by: null
 related: [PRD-BULLSEYE-001, ADR-0001, ADR-0002, ADR-0003, ADR-0004, ADR-0005]
-code_refs: [src/rules.rs, src/discover.rs, src/config.rs]
-test_refs: [src/rules.rs, src/config.rs]
+code_refs: [src/rules.rs, src/discover.rs, src/config.rs, src/geoip.rs]
+test_refs: [src/rules.rs, src/config.rs, src/geoip.rs]
 tags: [constitution, glossary, domain-model]
 ---
 
@@ -54,12 +54,23 @@ Something the user has deliberately excluded from the tunnel. Every bypass leaks
 the real address on purpose, which is why the interface never calls one anything
 softer than a hole.
 
-Three of the four kinds name a **destination**: a **single IP address**, a **CIDR
-range**, or a **domain**. Domains are resolved to addresses when the ruleset is
-built, because nftables sets hold addresses and not names — so a bypass covers
-the addresses a name had at arm time, and a rotating CDN outgrows it.
+Four of the five kinds name a **destination**: a **single IP address**, a **CIDR
+range**, a **domain**, or a **country**. Domains are resolved to addresses when
+the ruleset is built, because nftables sets hold addresses and not names — so a
+bypass covers the addresses a name had at arm time, and a rotating CDN outgrows
+it.
 
-The fourth names a **sender**: an **app bypass**, matched as
+A **country bypass** — `geoip:ir` — is every address range a country has, read
+out of the `geoip.dat` an xray or v2ray install already ships. It exists because
+a domain *suffix* cannot be a hole at all: there is no way to enumerate `*.ir`,
+and a ruleset holds addresses. The country is the honest thing that ask can
+become, and it is deliberately not the same claim — it covers Iranian services
+that are not `.ir`, and misses a `.ir` name hosted abroad. Reading the same
+database the VPN's own routing reads is what stops the kill switch and the VPN
+disagreeing about where a country is. No database on the machine means no hole,
+reported and skipped, never a failure to arm.
+
+The fifth names a **sender**: an **app bypass**, matched as
 `meta skgid <gid>` against a dedicated unix group. `bullseye run <command>`
 starts a command with that group as its primary group, and only a fresh process
 is affected — an already-running program keeps the group it started with, and one

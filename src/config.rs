@@ -22,6 +22,9 @@ pub struct Config {
     pub allow: Vec<String>,
     pub apps: Vec<String>,
     pub group: String,
+    /// Where the country ranges behind a `geoip:` bypass are read from. Absent
+    /// means the usual xray and v2ray install paths are searched instead.
+    pub geoip: Option<PathBuf>,
     pub lan: bool,
     pub tailscale: bool,
 }
@@ -36,6 +39,7 @@ impl Default for Config {
             allow: Vec::new(),
             apps: Vec::new(),
             group: BYPASS_GROUP.to_owned(),
+            geoip: None,
             lan: true,
             tailscale: true, // principle 3: there is always a way back in
         }
@@ -64,17 +68,21 @@ impl Config {
             allow: every(&doc, "bypass", "allow", rules::bypass_entry)?,
             apps: every(&doc, "bypass", "apps", rules::app)?,
             group: optional(&doc, "bypass", "group", rules::group)?.unwrap_or(default.group),
+            geoip: optional(&doc, "bypass", "geoip", |v| Ok(v.to_owned()))?.map(PathBuf::from),
             lan: flag(&doc, "local", "lan", default.lan)?,
             tailscale: flag(&doc, "local", "tailscale", default.tailscale)?,
         })
     }
 
-    pub fn allow(&mut self, entry: &str) -> Result<(), String> {
+    /// Returns what was actually opened, which is not always what was typed: a
+    /// pasted URL keeps only its host, and `*.ir` is a country. Reporting the entry
+    /// back is the only thing that tells the user which of those they got.
+    pub fn allow(&mut self, entry: &str) -> Result<String, String> {
         let entry = rules::bypass_entry(entry)?;
         if !self.allow.contains(&entry) {
-            self.allow.push(entry);
+            self.allow.push(entry.clone());
         }
-        Ok(())
+        Ok(entry)
     }
 
     pub fn deny(&mut self, entry: &str) -> bool {
@@ -126,13 +134,20 @@ impl Config {
             "the VPN may reach this address and no other; if its server moves, nothing gets out",
         );
         s += "\n[bypass]\n\
-              # Leaves outside the tunnel, with your real address: an IP, a CIDR or a domain.\n";
+              # Leaves outside the tunnel, with your real address: an IP, a CIDR, a\n\
+              # domain, or geoip:ir for every address range a country has.\n";
         s += &format!("allow = {}\n", strings(&self.allow));
         s += "# Launched by `bullseye run <name>`, and listed in the TUI.\n";
         s += &format!("apps = {}\n", strings(&self.apps));
         s += "# Sockets owned by this group leave outside the tunnel. No group, no hole:\n\
               #   sudo groupadd -f bullseye-bypass && sudo gpasswd -a $USER bullseye-bypass\n";
         s += &format!("group = {}\n", quoted(&self.group));
+        s += &line(
+            "geoip",
+            self.geoip.as_ref().and_then(|p| p.to_str()),
+            "where `geoip:ir` reads a country's ranges from; xray's and v2ray's own \
+             paths are searched when this is unset",
+        );
         s += "\n[local]\n\
               # LAN, DHCP, multicast — none of it routes to the internet.\n";
         s += &format!("lan = {}\n", self.lan);
@@ -285,12 +300,20 @@ mod tests {
         config.allow("registry.npmjs.org").unwrap();
         config.allow("192.168.1.50").unwrap();
         config.apps.push("firefox".into());
+        // What went in is not what is stored: a country is what a ccTLD can be.
+        assert_eq!(config.allow("*.ir").unwrap(), "geoip:ir");
+        assert_eq!(config.allow("https://jobinja.ir/jobs").unwrap(), "jobinja.ir");
+        config.geoip = Some("/usr/share/xray/geoip.dat".into());
         config.lan = false;
 
         let read = Config::parse(&config.render()).unwrap();
         assert_eq!(read.interface.as_deref(), Some("xray_tun"));
         assert_eq!(read.pin.as_deref(), Some("5.6.7.8"));
-        assert_eq!(read.allow, ["registry.npmjs.org", "192.168.1.50"]);
+        assert_eq!(
+            read.allow,
+            ["registry.npmjs.org", "192.168.1.50", "geoip:ir", "jobinja.ir"]
+        );
+        assert_eq!(read.geoip.as_deref(), Some(Path::new("/usr/share/xray/geoip.dat")));
         assert_eq!(read.apps, ["firefox"]);
         assert!(!read.lan && read.tailscale);
         assert_eq!(read.group, BYPASS_GROUP);

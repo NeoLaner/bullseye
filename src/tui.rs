@@ -65,6 +65,18 @@ struct App {
     /// The frame the drop counter last went up on. That is the one moment a user
     /// can see the kill switch doing its job rather than be told that it is.
     hit: Option<u64>,
+    /// Work waiting for a draw to happen first.
+    pending: Option<Job>,
+}
+
+/// Work that has to happen after a draw rather than before one. Rebuilding the plan
+/// resolves every bypass domain and re-arming shells out to nft, so both take
+/// seconds — and a screen that freezes for two of them with the old list still on it
+/// is how a keypress that did work reads as one that did nothing.
+enum Job {
+    Refresh,
+    /// The config changed, so the kernel has to be told.
+    Reapply,
 }
 
 /// The one-line editor at the bottom. A prompt rather than a form: everything the
@@ -100,6 +112,7 @@ impl App {
             message: String::new(),
             frame: 0,
             hit: None,
+            pending: None,
         })
     }
 
@@ -109,6 +122,17 @@ impl App {
             terminal
                 .draw(|frame| self.draw(frame))
                 .map_err(|e| format!("drawing: {e}"))?;
+            // After the draw, so the row that just went and the line saying so are
+            // already on the screen while this runs.
+            if let Some(job) = self.pending.take() {
+                match job {
+                    Job::Refresh => {
+                        self.refresh();
+                    }
+                    Job::Reapply => self.reapply(),
+                }
+                continue;
+            }
             if !event::poll(TICK).map_err(|e| format!("input: {e}"))? {
                 self.frame += 1;
                 // Two clocks, because they cost different things: a frame is free
@@ -144,8 +168,8 @@ impl App {
         match key {
             KeyCode::Char('q') | KeyCode::Esc => return true,
             KeyCode::Char(' ') => self.toggle(),
-            KeyCode::Char('r') => self.refresh(),
-            KeyCode::Char('a') => self.ask("allow (IP, CIDR or domain)", Field::Allow),
+            KeyCode::Char('r') => self.pending = Some(Job::Refresh),
+            KeyCode::Char('a') => self.ask("allow (IP, CIDR, domain or geoip:ir)", Field::Allow),
             KeyCode::Char('A') => self.ask("app to launch outside the tunnel", Field::App),
             KeyCode::Char('p') => self.ask("pin the VPN's server (empty to unpin)", Field::Pin),
             KeyCode::Char('d') => self.deny(),
@@ -174,11 +198,15 @@ impl App {
                     return;
                 };
                 let entry = prompt.buffer.trim().to_owned();
-                self.message = match self.commit(prompt.field, &entry) {
-                    Ok(said) => said,
-                    Err(why) => why,
-                };
-                self.refresh();
+                match self.commit(prompt.field, &entry) {
+                    // A refused entry changed nothing, and re-resolving every bypass
+                    // to discover that is two frozen seconds spent on no news.
+                    Err(why) => self.message = why,
+                    Ok(said) => {
+                        self.message = said;
+                        self.pending = Some(Job::Reapply);
+                    }
+                }
             }
             _ => {}
         }
@@ -187,9 +215,9 @@ impl App {
     fn commit(&mut self, field: Field, entry: &str) -> Result<String, String> {
         match field {
             Field::Allow => {
-                self.config.allow(entry)?;
+                let opened = self.config.allow(entry)?;
                 self.config.save()?;
-                Ok(format!("{entry} leaves outside the tunnel now"))
+                Ok(format!("{opened} leaves outside the tunnel now"))
             }
             Field::App => {
                 self.config.apps.push(rules::app(entry)?);
@@ -231,7 +259,32 @@ impl App {
             Err(why) => why,
         };
         self.selected = self.selected.saturating_sub(1);
-        self.refresh();
+        self.pending = Some(Job::Reapply);
+    }
+
+    /// A config change the kernel never hears about is a hole the user believes they
+    /// closed. The CLI re-arms after every edit and this did not, so a denied bypass
+    /// left the list, left the file, and stayed open in the ruleset.
+    ///
+    /// The daemon's guard comes with it: narrowing a live ruleset into a lockdown
+    /// would seal the box away from the VPN it is protecting, so an edit that would
+    /// do that is kept out of the kernel and said out loud instead.
+    fn reapply(&mut self) {
+        if !self.refresh() {
+            return; // the message is why, and arming a stale plan would be worse
+        }
+        if self.blocked.is_none() {
+            self.message += " — disarmed, so this takes effect at the next arm";
+            return;
+        }
+        if let Err(why) = crate::refuse_lockout(&self.plan) {
+            self.message += &format!(" — the ruleset is unchanged: {why}");
+            return;
+        }
+        self.message = match crate::arm(&self.plan, None) {
+            Ok(()) => format!("{} — re-armed", self.message),
+            Err(why) => why,
+        };
     }
 
     fn launch(&mut self) {
@@ -267,7 +320,7 @@ impl App {
                 Ok(()) => "disarmed — nothing is enforcing anything now".into(),
                 Err(why) => why,
             };
-            self.refresh();
+            self.pending = Some(Job::Refresh);
             return;
         }
         // The CLI's guards, and for the same reason: arming with no upstream
@@ -280,7 +333,7 @@ impl App {
             Ok(()) => "armed".into(),
             Err(why) => why,
         };
-        self.refresh();
+        self.pending = Some(Job::Refresh);
     }
 
     /// The drop counter, and whether it just moved. Only the tick calls this:
@@ -296,14 +349,21 @@ impl App {
         }
     }
 
-    /// Re-runs discovery. Slow enough to be a keypress rather than a tick — it reads
-    /// /proc, asks `ss`, and resolves every bypass domain.
-    fn refresh(&mut self) {
-        match crate::plan(&self.config, false) {
-            Ok(plan) => self.plan = plan,
-            Err(why) => self.message = why,
-        }
+    /// Re-runs discovery, and answers whether the plan is now the current one. Slow
+    /// enough to be a keypress rather than a tick — it reads /proc, asks `ss`, and
+    /// resolves every bypass domain.
+    fn refresh(&mut self) -> bool {
         self.blocked = nft::blocked();
+        match crate::plan(&self.config, false) {
+            Ok(plan) => {
+                self.plan = plan;
+                true
+            }
+            Err(why) => {
+                self.message = why;
+                false
+            }
+        }
     }
 
     fn rows(&self) -> Vec<Row> {

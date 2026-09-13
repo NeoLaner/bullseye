@@ -124,12 +124,21 @@ impl Holes {
 
 /// Named rather than anonymous so the daemon can widen a snapshot with a single
 /// atomic `nft add element` instead of re-arming (ADR-0002, costs).
+///
+/// `auto-merge` is what makes the holes independent of each other. Without it an
+/// interval set refuses the whole ruleset over any overlap, and overlaps are the
+/// normal case rather than a mistake: a domain resolves to an address that sits
+/// inside a country's ranges, two tunnels find the same upstream, a country's own
+/// ranges touch. Every one of those would otherwise be a kill switch that will not
+/// load, reported as `conflicting intervals` and pointing at a character offset in
+/// a line four thousand characters long. Merging costs nothing here — the table is
+/// replaced whole at every arm, so nothing ever deletes a single element back out.
 fn nft_set(name: &str, elements: &[String]) -> String {
     let elements = match elements {
         [] => String::new(),
         e => format!(" elements = {{ {} }}", e.join(", ")),
     };
-    format!("\tset {name} {{ type ipv4_addr; flags interval;{elements} }}\n")
+    format!("\tset {name} {{ type ipv4_addr; flags interval; auto-merge;{elements} }}\n")
 }
 
 /// Parse an IPv4 address or CIDR, and render it back from the parsed value.
@@ -163,22 +172,68 @@ pub fn address(input: &str) -> Result<String, String> {
     })
 }
 
-/// A bypass entry as the glossary defines one: a single address, a CIDR, or a
-/// domain. Which of the three it is only matters at arm time, when the domain has
-/// to be resolved and the other two do not.
+/// A bypass entry as the glossary defines one: a single address, a CIDR, a domain,
+/// or a country. Which it is only matters at arm time, when a domain has to be
+/// resolved, a country read out of a geoip database, and the other two neither.
 pub fn bypass_entry(input: &str) -> Result<String, String> {
+    if let Some(code) = country_code(input) {
+        return Ok(format!("geoip:{code}"));
+    }
+    if input.starts_with("*.") {
+        return Err(format!(
+            "{input:?}: a ruleset holds addresses and not names, so the only \
+             wildcard that can be a hole is a whole country — `geoip:ir` for a \
+             ccTLD like *.ir. A name under one domain has to be named."
+        ));
+    }
     address(input).or_else(|why| {
-        domain(input).map_err(|_| match input.contains(char::is_numeric) {
+        domain(hostname(input)).map_err(|_| match input.contains(char::is_numeric) {
             true => why, // looks like a botched address; say so rather than "not a domain"
-            false => format!("{input:?} is not an IP address, a CIDR or a domain"),
+            false => format!("{input:?} is not an IP address, a CIDR, a domain or geoip:<cc>"),
         })
     })
 }
 
+/// The country in `geoip:ir`, and in `*.ir`, which is how someone asks for the same
+/// thing in the words they already have. The two are not the same claim — a `.ir`
+/// name can be hosted anywhere, and plenty of Iranian services are not `.ir` at all
+/// — but a domain suffix cannot be matched by a firewall and a country's address
+/// ranges can, so this is the honest thing the ask can become.
+fn country_code(input: &str) -> Option<String> {
+    let code = input
+        .strip_prefix("geoip:")
+        .or_else(|| input.strip_prefix("*."))?;
+    let shaped = code.len() == 2 && code.bytes().all(|b| b.is_ascii_alphabetic());
+    shaped.then(|| code.to_ascii_lowercase())
+}
+
+/// The host in something pasted out of a browser: `https://jobinja.ir/jobs?x=1` is
+/// the domain `jobinja.ir`. Neither the scheme nor the path can survive into a set
+/// of addresses — a hole is opened to a host, never to a URL — so they are dropped
+/// here rather than left as something the user has to trim by hand.
+fn hostname(input: &str) -> &str {
+    let after_scheme = input.split_once("://").map_or(input, |(_, rest)| rest);
+    after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme)
+}
+
 /// A hostname. It never reaches a ruleset — it is resolved to addresses first —
 /// but it is written back to the config file, so it is held to the same standard.
+///
+/// A last label of digits alone is not a hostname (RFC 1123), and refusing it here
+/// is what stops an address that `address` has already refused from arriving by the
+/// other door: `hostname` drops everything after the first `/`, so `1.2.3.4/33`
+/// would otherwise come back through as a perfectly good `1.2.3.4` — a hole at a
+/// different place than the one the user typed.
 pub fn domain(input: &str) -> Result<String, String> {
+    let numeric = input
+        .rsplit('.')
+        .next()
+        .is_some_and(|last| last.bytes().all(|b| b.is_ascii_digit()));
     let shaped = (1..=253).contains(&input.len())
+        && !numeric
         && !input.starts_with(['-', '.'])
         && !input.ends_with('-')
         && input.split('.').all(|label| {
@@ -352,6 +407,24 @@ mod tests {
         assert!(bypass_entry("0.0.0.0/0").is_err()); // the off switch, not a hole
         assert!(bypass_entry("exa mple.com").is_err());
         assert!(bypass_entry("evil\".com").is_err());
+
+        // Pasted out of a browser, which is where a domain is usually copied from.
+        assert_eq!(bypass_entry("https://jobinja.ir/").unwrap(), "jobinja.ir");
+        assert_eq!(
+            bypass_entry("http://my.shatel.ir/login?next=/#top").unwrap(),
+            "my.shatel.ir"
+        );
+        // Dropping the path must not let an address in by the other door: both of
+        // these are refused as CIDRs, and neither may come back as a bare address.
+        assert!(bypass_entry("1.2.3.4/33").is_err());
+        assert!(bypass_entry("10.0.0.0/0").is_err());
+
+        // A country, however it is asked for — and only a country, because a name
+        // under one domain is not something a ruleset of addresses can match.
+        assert_eq!(bypass_entry("*.ir").unwrap(), "geoip:ir");
+        assert_eq!(bypass_entry("geoip:IR").unwrap(), "geoip:ir");
+        assert!(bypass_entry("*.digikala.com").is_err());
+        assert!(bypass_entry("geoip:iran").is_err());
         assert!(app("firefox --private-window").is_ok());
         assert!(app("firefox; rm -rf ~").is_ok()); // never shelled out, so this is a name
         assert!(app("evil\"name").is_err()); // but it does go back into the config file
@@ -379,11 +452,27 @@ mod tests {
     fn an_empty_set_renders_without_an_elements_clause() {
         assert_eq!(
             nft_set("upstream4", &[]),
-            "\tset upstream4 { type ipv4_addr; flags interval; }\n"
+            "\tset upstream4 { type ipv4_addr; flags interval; auto-merge; }\n"
         );
         assert_eq!(
             nft_set("bypass4", &["1.2.3.4".into(), "10.0.0.0/8".into()]),
-            "\tset bypass4 { type ipv4_addr; flags interval; elements = { 1.2.3.4, 10.0.0.0/8 } }\n"
+            "\tset bypass4 { type ipv4_addr; flags interval; auto-merge; \
+             elements = { 1.2.3.4, 10.0.0.0/8 } }\n"
         );
+    }
+
+    /// A hole inside another hole is the normal case once a country is a bypass:
+    /// every domain that resolves into it overlaps it. The kernel refuses an
+    /// interval set that overlaps unless it is told to merge, and a kill switch that
+    /// will not load is the one failure this project cannot have.
+    #[test]
+    fn holes_that_overlap_do_not_refuse_the_whole_ruleset() {
+        let mut holes = Holes::default();
+        holes.add_tunnel("wg0").unwrap();
+        holes.add_bypass("178.216.248.0/21").unwrap();
+        holes.add_bypass("178.216.251.186").unwrap(); // inside the range above
+        holes.add_upstream("1.2.3.4").unwrap();
+        holes.add_upstream("1.2.3.4").unwrap(); // two tunnels, one server
+        assert_eq!(holes.ruleset().matches("auto-merge").count(), 2);
     }
 }

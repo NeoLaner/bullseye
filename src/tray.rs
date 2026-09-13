@@ -136,18 +136,18 @@ impl Bullseye {
                 // holding perfectly well right now.
                 self.state = State::Unknown;
                 self.detail = format!(
-                    "nft would not answer, and no daemon is running to have asked\n\
+                    "nft would not answer, and no daemon is running to have asked \
                      for me, so nothing here knows whether the kill switch is on:\n\n\
                      {why}\n\n\
-                     Either enable the bullseye service, or allow this user to run\n\
-                     nft without a password — there is nowhere to type one into a\n\
+                     Either enable the bullseye service, or allow this user to run \
+                     nft without a password — there is nowhere to type one into a \
                      bar icon."
                 );
                 return;
             }
         }
-        self.detail += "\n\nNo bullseye daemon is running, so nothing re-arms when the\n\
-                        VPN moves to another server, and the packet counter is not\n\
+        self.detail += "\n\nNo bullseye daemon is running, so nothing re-arms when the \
+                        VPN moves to another server, and the packet counter is not \
                         being read.";
     }
 
@@ -206,10 +206,10 @@ impl Bullseye {
 
     /// Everything the tooltip and the menu say, worst news first.
     fn lines(&self) -> String {
-        match &self.problem {
+        wrapped(&match &self.problem {
             Some(why) => format!("{why}\n\n{}", self.detail),
             None => self.detail.clone(),
-        }
+        })
     }
 }
 
@@ -357,6 +357,39 @@ fn labelled(line: &str) -> String {
     line.replace('_', "__")
 }
 
+/// A menu row is as wide as its label, and a bar will happily draw one clear
+/// across the screen — a refused arm or an nft error arrives as one long sentence.
+/// Everything the menu and the tooltip show comes through `lines`, so it is broken
+/// here once rather than every message being written pre-broken and each of them
+/// guessing at a width.
+///
+/// Breaks are found in the line itself rather than rebuilt out of its words, so
+/// the report's columns — `tunnel   xray_tun (tun)` — keep the spacing that lines
+/// them up, and a row that already fits is passed through untouched.
+const WIDTH: usize = 72;
+
+fn wrapped(text: &str) -> String {
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let mut rest = line;
+        while rest.chars().count() > WIDTH {
+            let limit = rest
+                .char_indices()
+                .nth(WIDTH)
+                .map_or(rest.len(), |(at, _)| at);
+            // Nothing to break on — an address list run together, a path — goes out
+            // wide. A row cut mid-word is worse than a wide one.
+            let Some(at) = rest[..limit].rfind(' ') else {
+                break;
+            };
+            rows.push(rest[..at].trim_end().to_owned());
+            rest = rest[at + 1..].trim_start();
+        }
+        rows.push(rest.to_owned());
+    }
+    rows.join("\n")
+}
+
 /// A tooltip is markup, and the text pasted into it includes config values. They
 /// are all validated by `rules`, so none of them can contain either of these
 /// today — this is here so that staying true is not a thing to remember.
@@ -443,6 +476,29 @@ mod tests {
         );
         assert_eq!(escaped("a & b <c>"), "a &amp; b &lt;c>");
         assert_eq!(escaped("5.6.7.8 — pinned"), "5.6.7.8 — pinned");
+    }
+
+    #[test]
+    fn a_long_line_wraps_without_losing_a_word_or_a_column() {
+        let refused = "No upstream: the VPN cannot reach its own server, so arming \
+                       would strangle the tunnel. Pin it, or set [vpn] cgroup or \
+                       [vpn] config.";
+        let broken = wrapped(refused);
+        assert!(broken.lines().count() > 1);
+        for row in broken.lines() {
+            assert!(row.chars().count() <= WIDTH, "{row:?} is still too wide");
+        }
+        // The same words in the same order: wrapping may not drop or reorder any
+        // part of the one message the user has to be able to read.
+        assert_eq!(
+            broken.split_whitespace().collect::<Vec<_>>(),
+            refused.split_whitespace().collect::<Vec<_>>()
+        );
+        // A row that fits keeps the spacing that aligns the report.
+        assert_eq!(wrapped("tunnel   xray__tun (tun)"), "tunnel   xray__tun (tun)");
+        // Nothing to break on: wide rather than cut mid-word.
+        let unbreakable = "a".repeat(WIDTH + 10);
+        assert_eq!(wrapped(&unbreakable), unbreakable);
     }
 
     #[test]
