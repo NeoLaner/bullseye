@@ -206,10 +206,31 @@ impl Bullseye {
 
     /// Everything the tooltip and the menu say, worst news first.
     fn lines(&self) -> String {
-        wrapped(&match &self.problem {
+        wrapped(&self.said())
+    }
+
+    fn said(&self) -> String {
+        match &self.problem {
             Some(why) => format!("{why}\n\n{}", self.detail),
             None => self.detail.clone(),
-        })
+        }
+    }
+
+    /// The menu's share of `lines`: a row per bypass is a wall once there are a
+    /// few, and every one of them is already in the tooltip. The menu counts them.
+    fn menu_lines(&self) -> String {
+        let said = self.said();
+        let (holes, rest): (Vec<&str>, Vec<&str>) =
+            said.lines().partition(|l| l.starts_with("bypass "));
+        let mut text = rest.join("\n");
+        if !holes.is_empty() {
+            let plural = if holes.len() == 1 { "" } else { "s" };
+            text += &format!(
+                "\nbypass   {} hole{plural} — hover the icon for each",
+                holes.len()
+            );
+        }
+        wrapped(&text)
     }
 }
 
@@ -315,7 +336,7 @@ impl ksni::Tray for Bullseye {
             MenuItem::Separator,
         ];
         items.extend(
-            self.lines()
+            self.menu_lines()
                 .lines()
                 .filter(|l| !l.trim().is_empty())
                 .map(|line| {
@@ -529,6 +550,10 @@ mod tests {
         };
         assert!(tray.lines().starts_with("No VPN interface found."));
         assert!(tray.lines().contains("0 packets blocked"));
+        tray.detail = "bypass   a.ir -> 1.2.3.4\nbypass   geoip:ir -> 9 ranges\n0 packets blocked".into();
+        assert!(!tray.menu_lines().contains("a.ir"));
+        assert!(tray.menu_lines().contains("bypass   2 holes"));
+        assert!(tray.lines().contains("a.ir"));
         // A click clears it; nothing else does, or the one message the user has to
         // read would be gone before they hovered.
         tray.working = true;
