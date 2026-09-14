@@ -236,24 +236,24 @@ says so when it is done. The one thing it will not do is re-arm into a state
 where nothing gets out at all: if the tunnel has gone away, the edit is saved,
 the ruleset is left alone, and the message says which.
 
-The corner of the header is the target itself, which is the state with a face on
-it — asleep while nothing is enforced, watching while the ruleset holds, startled
-for a moment each time the drop counter moves, and alarmed while a pin no longer
-matches the server the VPN is dialling:
+The corner of the header is the same bullseye the tray draws, in the same
+colours and shapes — red and filled while the ruleset holds, red with sight lines
+while a pin no longer matches the server the VPN is dialling, and grey with an
+empty centre while nothing is enforced:
 
 ```
-   .-───-.        .-───-.        .-───-.
-  / .═══. \      / .───. \      / .───. \
- | | o o | |    | | x x | |    | | - - | |
- | |  u  | |    | |  o  | |    | |  o  | |
-  \ `═══' /      \ `───' /      \ `───' /
-   `-───-'        `-───-'        `-───-'   z
-    armed          dropping       disarmed
+      ▄▄████▄▄              ▄▄████▄▄              ▄▄████▄▄
+    ██▀▀    ▀▀██          ██▀▀ ██ ▀▀██          ██▀▀    ▀▀██
+   ██ ▄██▀▀██▄ ██        ██ ▄██████▄ ██        ██ ▄██▀▀██▄ ██
+  ██  █▀ ▄▄ ▀█  ██      ██▄▄██▄██▄██▄▄██      ██  █▀    ▀█  ██
+  ██  █▄ ▀▀ ▄█  ██      ██▀▀██▀██▀██▀▀██      ██  █▄    ▄█  ██
+   ██ ▀██▄▄██▀ ██        ██ ▀██████▀ ██        ██ ▀██▄▄██▀ ██
+    ██▄▄    ▄▄██          ██▄▄ ██ ▄▄██          ██▄▄    ▄▄██
+      ▀▀████▀▀              ▀▀████▀▀              ▀▀████▀▀
+       armed                 blocked               disarmed
 ```
 
-It is the only thing on the screen that moves on its own, which is how you notice
-a state you were not reading. On a terminal too narrow for it, the report gets the
-columns instead.
+On a terminal too narrow for it, the report gets the columns instead.
 
 ## Commands
 

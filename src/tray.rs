@@ -405,7 +405,7 @@ fn escaped(text: &str) -> String {
 /// The gaps between the rings are left transparent rather than painted white. A
 /// bar can be any colour, and rings separated by the panel behind them read as a
 /// bullseye on all of them.
-fn draw(px: i32, state: State) -> ksni::Icon {
+pub(crate) fn draw(px: i32, state: State) -> ksni::Icon {
     /// Fractions of the radius, outermost first, so a state drawn with fewer of
     /// them loses the centre rather than the ring that makes it recognisable.
     static BANDS: [(f32, f32); 3] = [(0.72, 0.98), (0.34, 0.56), (0.0, 0.18)];

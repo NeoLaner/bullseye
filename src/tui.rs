@@ -4,29 +4,23 @@
 //! sits next to what the VPN is actually doing so a mismatch is visible rather
 //! than something the user discovers as "the internet stopped working".
 
-use crate::{Plan, config::Config, discover, nft, rules};
+use crate::daemon::State;
+use crate::{Plan, config::Config, discover, nft, rules, tray};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const KEYS: &str = "space arm/disarm · a allow · A app · d deny · p pin · \
                     enter run · r refresh · q quit";
 
-/// Fast enough for the mascot to move, and the only thing that runs on it: the
-/// counter is read on its own slower clock, because reading it is a `sudo` call.
-const TICK: Duration = Duration::from_millis(200);
-
-/// The counter is what tells a user the kill switch is working, so it moves
-/// visibly — but every read of it is an nft call, so not on every frame.
-const COUNTER: Duration = Duration::from_secs(2);
-
-/// Six lines and thirteen columns of target. It only gets drawn on a terminal
-/// with room to spare for it.
-const MASCOT: (u16, u16) = (15, 6);
+/// The tray's mark, pixels across. A cell is one pixel wide and two tall, so it
+/// takes this many columns and half as many lines. Drawn only on a terminal with
+/// room to spare for it.
+const MARK: u16 = 16;
 
 pub fn run() -> Result<(), String> {
     // Before the alternate screen, never behind it: a sudo password prompt with
@@ -59,12 +53,6 @@ struct App {
     selected: usize,
     prompt: Option<Prompt>,
     message: String,
-    /// Ticks since the screen opened. Only the mascot reads it — everything else
-    /// on this screen changes because the user or the kernel changed it.
-    frame: u64,
-    /// The frame the drop counter last went up on. That is the one moment a user
-    /// can see the kill switch doing its job rather than be told that it is.
-    hit: Option<u64>,
     /// Work waiting for a draw to happen first.
     pending: Option<Job>,
 }
@@ -110,14 +98,11 @@ impl App {
             selected: 0,
             prompt: None,
             message: String::new(),
-            frame: 0,
-            hit: None,
             pending: None,
         })
     }
 
     fn until_quit(&mut self, terminal: &mut DefaultTerminal) -> Result<(), String> {
-        let mut counted = Instant::now();
         loop {
             terminal
                 .draw(|frame| self.draw(frame))
@@ -133,14 +118,10 @@ impl App {
                 }
                 continue;
             }
-            if !event::poll(TICK).map_err(|e| format!("input: {e}"))? {
-                self.frame += 1;
-                // Two clocks, because they cost different things: a frame is free
-                // and a counter read is an nft call.
-                if counted.elapsed() >= COUNTER {
-                    counted = Instant::now();
-                    self.count();
-                }
+            // Cheap poll: the counter is the one thing that moves on its own, and
+            // seeing it climb is how a user learns the kill switch is working.
+            if !event::poll(Duration::from_secs(2)).map_err(|e| format!("input: {e}"))? {
+                self.blocked = nft::blocked();
                 continue;
             }
             if let Event::Key(key) = event::read().map_err(|e| format!("input: {e}"))? {
@@ -336,19 +317,6 @@ impl App {
         self.pending = Some(Job::Refresh);
     }
 
-    /// The drop counter, and whether it just moved. Only the tick calls this:
-    /// arming resets the counter to zero, so a refresh comparing across that
-    /// would see a fall, and disarming makes it absent rather than smaller.
-    fn count(&mut self) {
-        let before = self.blocked;
-        self.blocked = nft::blocked();
-        if let (Some(before), Some(now)) = (before, self.blocked)
-            && now > before
-        {
-            self.hit = Some(self.frame);
-        }
-    }
-
     /// Re-runs discovery, and answers whether the plan is now the current one. Slow
     /// enough to be a keypress rather than a tick — it reads /proc, asks `ss`, and
     /// resolves every bypass domain.
@@ -374,27 +342,27 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         // Sized from the lines it actually holds, capped so that a machine with
-        // several tunnels still shows what bypasses in the pane below. The mascot
+        // several tunnels still shows what bypasses in the pane below. The mark
         // is the one thing here that may be dropped: a narrow terminal spends its
         // columns on the report, and a short one on the bypass pane.
         let header = self.header();
-        let mascot = match frame.area().width >= 64 {
-            true => MASCOT,
+        let mark = match frame.area().width >= 64 {
+            true => (MARK + 1, MARK / 2),
             false => (0, 0),
         };
         let areas = Layout::vertical([
-            Constraint::Length((header.len().max(mascot.1 as usize) as u16 + 2).min(12)),
+            Constraint::Length((header.len().max(mark.1 as usize) as u16 + 2).min(12)),
             Constraint::Min(3),
             Constraint::Length(2),
         ])
         .split(frame.area());
 
         let block = Block::bordered().title(" bullseye ");
-        let inside = Layout::horizontal([Constraint::Min(0), Constraint::Length(mascot.0)])
+        let inside = Layout::horizontal([Constraint::Min(0), Constraint::Length(mark.0)])
             .split(block.inner(areas[0]));
         frame.render_widget(block, areas[0]);
         frame.render_widget(Paragraph::new(header), inside[0]);
-        frame.render_widget(Paragraph::new(self.mascot()), inside[1]);
+        frame.render_widget(Paragraph::new(self.mark()), inside[1]);
 
         let rows = self.rows();
         let items: Vec<ListItem> = match rows.is_empty() {
@@ -440,22 +408,17 @@ impl App {
         frame.render_widget(Paragraph::new(footer), areas[2]);
     }
 
-    /// The mascot, and what it is doing about the state. Nothing here is load
-    /// bearing — the header says all of it in words — but it is the only thing on
-    /// the screen that moves, and a thing that moves is how a user notices that
-    /// something changed while they were not reading.
-    fn mascot(&self) -> Vec<Line<'static>> {
-        let mismatched = self.config.pin.is_some() && self.plan.mismatch.is_some();
-        let mood = match (self.blocked, mismatched) {
-            // Armed, and its own tunnel is among the things it is blocking.
-            (Some(_), true) => Mood::Alarmed,
-            // The counter moved within the last couple of seconds: something was
-            // just dropped, which is the kill switch working.
-            (Some(_), false) if self.hit.is_some_and(|at| self.frame - at < 12) => Mood::Hit,
-            (Some(_), false) => Mood::Watching,
-            (None, _) => Mood::Asleep,
+    /// The tray's bullseye, in the tray's colours and shapes, so the screen and the
+    /// bar are the same program. The header says all of it in words.
+    fn mark(&self) -> Vec<Line<'static>> {
+        let state = match self.blocked {
+            Some(_) if self.config.pin.is_some() && self.plan.mismatch.is_some() => {
+                State::Blocked
+            }
+            Some(_) => State::Armed,
+            None => State::Disarmed,
         };
-        draw_mascot(mood, self.frame)
+        draw_mark(tray::draw(MARK as i32, state))
     }
 
     fn header(&self) -> Vec<Line<'_>> {
@@ -487,63 +450,27 @@ impl App {
     }
 }
 
-/// What the mascot is doing, which is the state of the kill switch with a face
-/// on it.
-#[derive(Clone, Copy)]
-enum Mood {
-    /// Disarmed. Nothing to watch, so it sleeps.
-    Asleep,
-    /// Armed, and everything is as it should be.
-    Watching,
-    /// Armed, and a packet was just dropped.
-    Hit,
-    /// Armed, and the pin no longer matches the server the VPN is dialling, so
-    /// the tunnel it is protecting is among the things it is blocking.
-    Alarmed,
-}
-
-/// A target with a face in it, in six lines. The rings are the logo and never
-/// change; the eyes, the mouth and the colour are the state.
-///
-/// The eyes are three columns and the mouth is one, always, or the face moves
-/// around inside the rings — which is why `the_face_never_moves_inside_the_rings`
-/// exists rather than trusting the strings to stay the width they are.
-fn draw_mascot(mood: Mood, frame: u64) -> Vec<Line<'static>> {
-    let (eyes, mouth, colour) = match mood {
-        // A blink, on about one frame in ten.
-        Mood::Watching if frame.is_multiple_of(11) => ("- -", "u", Color::Green),
-        Mood::Watching => ("o o", "u", Color::Green),
-        Mood::Hit => ("x x", "o", Color::Yellow),
-        Mood::Alarmed => ("@ @", "n", Color::Red),
-        Mood::Asleep => ("- -", "o", Color::DarkGray),
-    };
-    // The inner ring pulses while it is armed, so that a working kill switch is
-    // never a still picture. Asleep it holds still, which is the point of it.
-    let inner = match matches!(mood, Mood::Asleep) || frame % 6 < 3 {
-        true => "───",
-        false => "═══",
-    };
-    // Startled things shake. Alarmed keeps shaking, because it is still true.
-    let shake = match matches!(mood, Mood::Hit | Mood::Alarmed) && frame.is_multiple_of(2) {
-        true => " ",
-        false => "",
-    };
-    // A z drifting away from a sleeping target.
-    let sleeping = match mood {
-        Mood::Asleep => ["z  ", " z ", "  z", "   "][(frame / 3 % 4) as usize],
-        _ => "   ",
-    };
-    [
-        format!("{sleeping}.-───-."),
-        format!("  / .{inner}. \\"),
-        format!(" | | {eyes} | |"),
-        format!(" | |  {mouth}  | |"),
-        format!("  \\ `{inner}' /"),
-        "   `-───-'".to_owned(),
-    ]
-    .into_iter()
-    .map(|line| Line::styled(format!(" {shake}{line}"), Style::default().fg(colour)))
-    .collect()
+/// A pixmap as half blocks: each cell is the pixel above and the pixel below it,
+/// and a pixel is either ink or the terminal behind it — the tray leaves its gaps
+/// transparent for the same reason.
+fn draw_mark(icon: ksni::Icon) -> Vec<Line<'static>> {
+    let px = icon.width as usize;
+    let pixel = |x: usize, y: usize| &icon.data[(y * px + x) * 4..][..4];
+    (0..px / 2)
+        .map(|row| {
+            let cells = (0..px).map(|x| {
+                let (top, bottom) = (pixel(x, row * 2), pixel(x, row * 2 + 1));
+                let glyph = match (top[0] >= 128, bottom[0] >= 128) {
+                    (true, true) => "█",
+                    (true, false) => "▀",
+                    (false, true) => "▄",
+                    (false, false) => " ",
+                };
+                Span::styled(glyph, Style::default().fg(Color::Rgb(top[1], top[2], top[3])))
+            });
+            Line::from(std::iter::once(Span::raw(" ")).chain(cells).collect::<Vec<_>>())
+        })
+        .collect()
 }
 
 fn bypass_row(row: &Row) -> ListItem<'_> {
@@ -555,31 +482,4 @@ fn bypass_row(row: &Row) -> ListItem<'_> {
         Span::styled(tag, Style::default().fg(Color::DarkGray)),
         Span::styled(entry.as_str(), Style::default().fg(colour)),
     ]))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The eyes are three columns and the mouth is one, in every mood and on
-    /// every frame, or the face drifts around inside the rings as it animates.
-    /// The rings themselves are a circle: widest across the middle, and the same
-    /// width above the centre as below it.
-    #[test]
-    fn the_face_never_moves_inside_the_rings() {
-        for mood in [Mood::Asleep, Mood::Watching, Mood::Hit, Mood::Alarmed] {
-            for frame in 0..24 {
-                let drawn = draw_mascot(mood, frame);
-                let widths: Vec<usize> = drawn.iter().map(Line::width).collect();
-                assert_eq!(widths.len(), 6);
-                assert_eq!(widths[0], widths[5], "{frame}: {widths:?}");
-                assert_eq!(widths[1], widths[4], "{frame}: {widths:?}");
-                assert_eq!(widths[2], widths[3], "{frame}: {widths:?}");
-                assert!(widths[2] > widths[1] && widths[1] > widths[0], "{widths:?}");
-                // Including the column a shake borrows, or it would clip against
-                // the report beside it every other frame.
-                assert!(widths[2] <= MASCOT.0 as usize, "{widths:?} does not fit");
-            }
-        }
-    }
 }
